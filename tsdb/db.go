@@ -827,6 +827,7 @@ func (db *DB) compactHead(head *RangeHead) (err error) {
 	// Add +1 millisecond to block maxt because block intervals are half-open: [b.MinTime, b.MaxTime).
 	// Because of this block intervals are always +1 than the total samples it includes.
 	maxt := head.MaxTime() + 1
+	startTime := time.Now()
 	uid, err := db.compactor.Write(db.dir, head, head.MinTime(), maxt, nil)
 	if err != nil {
 		return errors.Wrap(err, "persist head block")
@@ -848,6 +849,12 @@ func (db *DB) compactHead(head *RangeHead) (err error) {
 			return errors.Wrap(err, "head truncate failed (in compact)")
 		}
 	}
+
+	compactionTime := time.Now().Sub(startTime).Seconds()
+	if compactionTime > float64(maxt-head.MinTime()) {
+		level.Error(head.head.logger).Log("msg", "reached point of no return due to overload")
+	}
+
 	runtime.GC()
 
 	return nil
