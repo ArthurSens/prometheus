@@ -482,6 +482,7 @@ func (c *LeveledCompactor) Write(dest string, b BlockReader, mint, maxt int64, p
 		}
 	}
 
+	level.Debug(c.logger).Log("msg", "Creating new compacted block", "uid", uid)
 	err := c.write(dest, meta, b)
 	if err != nil {
 		return uid, err

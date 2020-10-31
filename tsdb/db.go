@@ -358,7 +358,10 @@ func (db *DBReadOnly) FlushWAL(dir string) (returnErr error) {
 	}
 	// Add +1 millisecond to block maxt because block intervals are half-open: [b.MinTime, b.MaxTime).
 	// Because of this block intervals are always +1 than the total samples it includes.
+	walSize, _ := head.wal.Size()
+	level.Debug(db.logger).Log("msg", "Printing size BEFORE compaction", "headSize", head.Size(), "walSize", walSize, "chunkDiskMapperSize", head.chunkDiskMapper.Size())
 	_, err = compactor.Write(dir, rh, mint, maxt+1, nil)
+	level.Debug(db.logger).Log("msg", "Printing size AFTER compaction ", "headSize", head.Size(), "walSize", walSize, "chunkDiskMapperSize", head.chunkDiskMapper.Size())
 	return errors.Wrap(err, "writing WAL")
 }
 
@@ -1031,8 +1034,30 @@ func (db *DB) reloadBlocks() (err error) {
 			deletable[b.Meta().ULID] = b
 		}
 	}
+
+	walSize, _ := db.head.wal.Size()
+	bSize := int64(0)
+	for _, block := range db.Blocks() {
+		bSize += block.Size()
+	}
+	level.Debug(db.logger).Log("msg", "Printing size BEFORE deletion", "numBlocks", len(db.Blocks()), "blocksSize", bSize, "headSize", db.head.Size(), "walSize", walSize, "chunkDiskMapperSize", db.head.chunkDiskMapper.Size())
+	level.Debug(db.logger).Log("msg", "Printing Blocks BEFORE deletion")
+	for _, b := range db.Blocks() {
+		level.Debug(db.logger).Log("block", b)
+	}
 	if err := db.deleteBlocks(deletable); err != nil {
 		return errors.Wrapf(err, "delete %v blocks", len(deletable))
+	}
+
+	bSize = 0
+	for _, block := range db.Blocks() {
+		bSize += block.Size()
+	}
+	walSize, _ = db.head.wal.Size()
+	level.Debug(db.logger).Log("msg", "Printing size AFTER deletion ", "numBlocks", len(db.Blocks()), "blocksSize", bSize, "headSize", db.head.Size(), "walSize", walSize, "chunkDiskMapperSize", db.head.chunkDiskMapper.Size())
+	level.Debug(db.logger).Log("msg", "Printing Blocks AFTER deletion")
+	for _, b := range db.Blocks() {
+		level.Debug(db.logger).Log("block", b)
 	}
 	return nil
 }
@@ -1083,8 +1108,11 @@ func deletableBlocks(db *DB, blocks []*Block) map[ulid.ULID]struct{} {
 		return blocks[i].Meta().MaxTime > blocks[j].Meta().MaxTime
 	})
 
+	level.Debug(db.logger).Log("msg", "Searching for deletable blocks")
+
 	for _, block := range blocks {
 		if block.Meta().Compaction.Deletable {
+			level.Debug(db.logger).Log("msg", "block was already marked as deletable", "block", block)
 			deletable[block.Meta().ULID] = struct{}{}
 		}
 	}
@@ -1126,6 +1154,7 @@ func BeyondTimeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struc
 // BeyondSizeRetention returns those blocks which are beyond the size retention
 // set in the db options.
 func BeyondSizeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struct{}) {
+	level.Debug(db.logger).Log("msg", "Looking for beyond size retention deletable blocks", "numBlocks", len(db.Blocks()))
 	// Size retention is disabled or no blocks to work with.
 	if len(blocks) == 0 || db.opts.MaxBytes <= 0 {
 		return
@@ -1136,17 +1165,27 @@ func BeyondSizeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struc
 	// Initializing size counter with WAL size and Head chunks
 	// written to disk, as that is part of the retention strategy.
 	blocksSize := db.Head().Size()
+	walSize, _ := db.Head().wal.Size()
+	level.Debug(db.logger).Log("msg", "Initializing size counter with WAL size and Head chunks written to disk", "blocksSizeSum", blocksSize, "headChunksSize", db.head.chunkDiskMapper.Size(), "walSize", walSize, "retentionLimit", db.opts.MaxBytes)
 	for i, block := range blocks {
 		blocksSize += block.Size()
+		level.Debug(db.logger).Log("msg", "Looking at block", "i", i, "block", block.Meta().ULID, "blockSize", block.Size(), "blocksSizeSum", blocksSize, "retentionLimit", db.opts.MaxBytes)
 		if blocksSize > int64(db.opts.MaxBytes) {
 			// Add this and all following blocks for deletion.
+			level.Debug(db.logger).Log("msg", "Limit passed, this and all older blocks should be deletable", "blocksSizeSum", blocksSize, "retentionLimit", db.opts.MaxBytes)
 			for _, b := range blocks[i:] {
+				level.Debug(db.logger).Log("msg", "Block set as deletable", "block", block.Meta().ULID)
 				deletable[b.meta.ULID] = struct{}{}
 			}
 			db.metrics.sizeRetentionCount.Inc()
 			break
 		}
 	}
+
+	if len(deletable) == 0 {
+		level.Debug(db.logger).Log("msg", "No blocks were marked for deletion", "blocksSizeSum", blocksSize, "retentionLimit", db.opts.MaxBytes)
+	}
+
 	return deletable
 }
 
