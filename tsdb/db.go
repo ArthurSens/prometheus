@@ -962,6 +962,7 @@ func (db *DB) reloadBlocks() (err error) {
 	// crashing towards the end of a compaction but before deletions. By doing that, we can pick up the deletion where it left off during a crash.
 	for _, block := range loadable {
 		if _, ok := deletableULIDs[block.meta.ULID]; ok {
+			level.Debug(db.logger).Log("msg", "block marked as deletable", "block", block, "blockSize", block.Size())
 			deletable[block.meta.ULID] = block
 		}
 		for _, b := range block.Meta().Compaction.Parents {
@@ -996,10 +997,12 @@ func (db *DB) reloadBlocks() (err error) {
 	// NOTE: We need to loop through loadable one more time as there might be loadable ready to be removed (replaced by compacted block).
 	for _, block := range loadable {
 		if _, ok := deletable[block.Meta().ULID]; ok {
+			level.Debug(db.logger).Log("msg", "Block is deletable and thus will not be loaded", "block", block, "blockSize", block.Size())
 			deletable[block.Meta().ULID] = block
 			continue
 		}
 
+		level.Debug(db.logger).Log("msg", "Block that will be loaded", "block", block, "blockSize", block.Size())
 		toLoad = append(toLoad, block)
 		blocksSize += block.Size()
 	}
@@ -1035,30 +1038,37 @@ func (db *DB) reloadBlocks() (err error) {
 		}
 	}
 
-	walSize, _ := db.head.wal.Size()
 	bSize := int64(0)
-	for _, block := range db.Blocks() {
-		bSize += block.Size()
+	level.Debug(db.logger).Log("msg", "Printing all blocks BEFORE deletion")
+	for _, b := range loadable {
+		bSize += b.Size()
+		isPersisted := false
+		for _, pb := range db.Blocks() {
+			if b.meta.ULID == pb.meta.ULID {
+				isPersisted = true
+				break
+			}
+		}
+		if isPersisted {
+			level.Debug(db.logger).Log("block", b, "size", b.Size(), "persisted", "yes")
+		} else {
+			level.Debug(db.logger).Log("block", b, "size", b.Size(), "persisted", "no")
+		}
 	}
-	level.Debug(db.logger).Log("msg", "Printing size BEFORE deletion", "numBlocks", len(db.Blocks()), "blocksSize", bSize, "headSize", db.head.Size(), "walSize", walSize, "chunkDiskMapperSize", db.head.chunkDiskMapper.Size())
-	level.Debug(db.logger).Log("msg", "Printing Blocks BEFORE deletion")
-	for _, b := range db.Blocks() {
-		level.Debug(db.logger).Log("block", b)
-	}
+	walSize, _ := db.Head().wal.Size()
+	level.Debug(db.logger).Log("msg", "Printing retained size BEFORE deletion", "blocks", bSize, "wal", walSize, "chunkDiskMapper", db.Head().Size(), "total", bSize+walSize+db.Head().Size())
+
 	if err := db.deleteBlocks(deletable); err != nil {
 		return errors.Wrapf(err, "delete %v blocks", len(deletable))
 	}
 
-	bSize = 0
-	for _, block := range db.Blocks() {
-		bSize += block.Size()
+	bSize = int64(0)
+	level.Debug(db.logger).Log("msg", "Printing all blocks AFTER deletion")
+	for _, b := range db.blocks {
+		bSize += b.Size()
+		level.Debug(db.logger).Log("block", b, "size", b.Size())
 	}
-	walSize, _ = db.head.wal.Size()
-	level.Debug(db.logger).Log("msg", "Printing size AFTER deletion ", "numBlocks", len(db.Blocks()), "blocksSize", bSize, "headSize", db.head.Size(), "walSize", walSize, "chunkDiskMapperSize", db.head.chunkDiskMapper.Size())
-	level.Debug(db.logger).Log("msg", "Printing Blocks AFTER deletion")
-	for _, b := range db.Blocks() {
-		level.Debug(db.logger).Log("block", b)
-	}
+	level.Debug(db.logger).Log("msg", "Printing retained size AFTER deletion", "blocks", bSize, "wal", walSize, "chunkDiskMapper", db.Head().Size(), "total", bSize+walSize+db.Head().Size())
 	return nil
 }
 
@@ -1112,7 +1122,7 @@ func deletableBlocks(db *DB, blocks []*Block) map[ulid.ULID]struct{} {
 
 	for _, block := range blocks {
 		if block.Meta().Compaction.Deletable {
-			level.Debug(db.logger).Log("msg", "block was already marked as deletable", "block", block)
+			level.Debug(db.logger).Log("msg", "block was already marked as deletable after compaction", "block", block, "blockSize", block.Size())
 			deletable[block.Meta().ULID] = struct{}{}
 		}
 	}
@@ -1154,7 +1164,7 @@ func BeyondTimeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struc
 // BeyondSizeRetention returns those blocks which are beyond the size retention
 // set in the db options.
 func BeyondSizeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struct{}) {
-	level.Debug(db.logger).Log("msg", "Looking for beyond size retention deletable blocks", "numBlocks", len(db.Blocks()))
+	level.Debug(db.logger).Log("msg", "Looking for beyond size retention deletable blocks, this includes persisted and non-persisted blocks", "numBlocks", len(blocks))
 	// Size retention is disabled or no blocks to work with.
 	if len(blocks) == 0 || db.opts.MaxBytes <= 0 {
 		return
@@ -1166,7 +1176,7 @@ func BeyondSizeRetention(db *DB, blocks []*Block) (deletable map[ulid.ULID]struc
 	// written to disk, as that is part of the retention strategy.
 	blocksSize := db.Head().Size()
 	walSize, _ := db.Head().wal.Size()
-	level.Debug(db.logger).Log("msg", "Initializing size counter with WAL size and Head chunks written to disk", "blocksSizeSum", blocksSize, "headChunksSize", db.head.chunkDiskMapper.Size(), "walSize", walSize, "retentionLimit", db.opts.MaxBytes)
+	level.Debug(db.logger).Log("msg", "Initializing size counter with WAL size and Head chunks disk mapper", "blocksSizeSum", blocksSize, "headChunksSize", db.head.chunkDiskMapper.Size(), "walSize", walSize, "retentionLimit", db.opts.MaxBytes)
 	for i, block := range blocks {
 		blocksSize += block.Size()
 		level.Debug(db.logger).Log("msg", "Looking at block", "i", i, "block", block.Meta().ULID, "blockSize", block.Size(), "blocksSizeSum", blocksSize, "retentionLimit", db.opts.MaxBytes)
