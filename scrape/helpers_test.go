@@ -72,6 +72,7 @@ type floatSample struct {
 }
 
 type histogramSample struct {
+	lset labels.Labels
 	t  int64
 	h  *histogram.Histogram
 	fh *histogram.FloatHistogram
@@ -140,7 +141,7 @@ func (a *collectResultAppender) AppendExemplar(ref storage.SeriesRef, l labels.L
 func (a *collectResultAppender) AppendHistogram(ref storage.SeriesRef, l labels.Labels, t int64, h *histogram.Histogram, fh *histogram.FloatHistogram) (storage.SeriesRef, error) {
 	a.mtx.Lock()
 	defer a.mtx.Unlock()
-	a.pendingHistograms = append(a.pendingHistograms, histogramSample{h: h, fh: fh, t: t})
+	a.pendingHistograms = append(a.pendingHistograms, histogramSample{lset: l, h: h, fh: fh, t: t})
 	if a.next == nil {
 		return 0, nil
 	}

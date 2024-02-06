@@ -332,6 +332,9 @@ type CreatedTimestampAppender interface {
 	//
 	// If the reference is 0 it must not be used for caching.
 	AppendCTZeroSample(ref SeriesRef, l labels.Labels, t, ct int64) (SeriesRef, error)
+
+	
+	AppendCTZeroHistogram(ref SeriesRef, l labels.Labels, t, ct int64, h *histogram.Histogram, fh *histogram.FloatHistogram) (SeriesRef, error)
 }
 
 // SeriesSet contains a set of series.

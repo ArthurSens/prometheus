@@ -37,6 +37,7 @@ import (
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/util/runutil"
@@ -830,6 +831,269 @@ func TestManagerCTZeroIngestion(t *testing.T) {
 			require.Equal(t, tc.expectedValues, getResultFloats(app, mName))
 		})
 	}
+}
+
+func TestManagerCTZeroIngestionHistograms(t *testing.T) {
+	const mName = "expected_histogram"
+	type expected struct {
+		labels     labels.Labels
+		floats     []float64
+		histograms []histogram.Histogram
+	}
+
+	for _, tc := range []struct {
+		name                  string
+		histogramSample       *dto.Histogram
+		enableCTZeroIngestion bool
+
+		expectedValues []expected
+	}{
+		// {
+		// 	name: "ct ingestion disabled",
+		// 	histogramSample: &dto.Histogram{
+		// 		SampleCount: proto.Uint64(1),
+		// 		SampleSum:   proto.Float64(1),
+		// 		Bucket: []*dto.Bucket{
+		// 			{CumulativeCount: proto.Uint64(1), UpperBound: proto.Float64(1)},
+		// 		},
+		// 		CreatedTimestamp: timestamppb.Now(),
+		// 	},
+		// 	expectedValues: []expected{
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_bucket", model.BucketLabel, "1.0"), floats: []float64{1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_bucket", model.BucketLabel, "+Inf"), floats: []float64{1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_count"), floats: []float64{1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_sum"), floats: []float64{1.0}},
+		// 	},
+		// },
+		// {
+		// 	name: "enabled without CT on histogram",
+		// 	histogramSample: &dto.Histogram{
+		// 		SampleCount: proto.Uint64(1),
+		// 		SampleSum:   proto.Float64(1),
+		// 		Bucket: []*dto.Bucket{
+		// 			{CumulativeCount: proto.Uint64(1), UpperBound: proto.Float64(1)},
+		// 		},
+		// 	},
+		// 	enableCTZeroIngestion: true,
+		// 	expectedValues: []expected{
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_bucket", model.BucketLabel, "1.0"), floats: []float64{1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_bucket", model.BucketLabel, "+Inf"), floats: []float64{1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_count"), floats: []float64{1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_sum"), floats: []float64{1.0}},
+		// 	},
+		// },
+		// {
+		// 	name: "enabled with CT on classic histogram",
+		// 	histogramSample: &dto.Histogram{
+		// 		SampleCount: proto.Uint64(1),
+		// 		SampleSum:   proto.Float64(1),
+		// 		Bucket: []*dto.Bucket{
+		// 			{CumulativeCount: proto.Uint64(1), UpperBound: proto.Float64(1)},
+		// 		},
+		// 		CreatedTimestamp: timestamppb.Now(),
+		// 	},
+		// 	enableCTZeroIngestion: true,
+		// 	expectedValues: []expected{
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_bucket", model.BucketLabel, "1.0"), floats: []float64{0.0, 1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_bucket", model.BucketLabel, "+Inf"), floats: []float64{0.0, 1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_count"), floats: []float64{0.0, 1.0}},
+		// 		{labels: labels.FromStrings(model.MetricNameLabel, mName+"_sum"), floats: []float64{0.0, 1.0}},
+		// 	},
+		// },
+		{
+			name: "enabled with CT on native histogram",
+			histogramSample: &dto.Histogram{
+				SampleCount:   proto.Uint64(4),
+				SampleSum:     proto.Float64(6),
+				Schema:        proto.Int32(3),
+				ZeroThreshold: proto.Float64(2.938735877055719e-39),
+				ZeroCount:     proto.Uint64(1),
+				PositiveSpan: []*dto.BucketSpan{
+					{Offset: proto.Int32(0), Length: proto.Uint32(1)},
+					{Offset: proto.Int32(7), Length: proto.Uint32(1)},
+					{Offset: proto.Int32(4), Length: proto.Uint32(1)},
+				},
+				PositiveDelta:    []int64{1, 0, 0},
+				CreatedTimestamp: timestamppb.Now(),
+			},
+			enableCTZeroIngestion: true,
+			expectedValues: []expected{
+				{
+					labels: labels.FromStrings(model.MetricNameLabel, mName),
+					histograms: []histogram.Histogram{
+						// CT
+						{Count: 0, Sum: 0, Schema: 3, ZeroThreshold: 0.0, ZeroCount: 0},
+						// Exposed sample
+						{
+							Count:         4,
+							Sum:           6,
+							Schema:        3,
+							ZeroThreshold: 2.938735877055719e-39,
+							ZeroCount:     1,
+							PositiveSpans: []histogram.Span{
+								{Offset: 0, Length: 1},
+								{Offset: 7, Length: 1},
+								{Offset: 4, Length: 1},
+							},
+						},
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &collectResultAppender{}
+			scrapeManager, err := NewManager(
+				&Options{
+					EnableCreatedTimestampZeroIngestion: tc.enableCTZeroIngestion,
+					skipOffsetting:                      true,
+				},
+				log.NewLogfmtLogger(os.Stderr),
+				&collectResultAppendable{app},
+				prometheus.NewRegistry(),
+			)
+			require.NoError(t, err)
+
+			require.NoError(t, scrapeManager.ApplyConfig(&config.Config{
+				GlobalConfig: config.GlobalConfig{
+					// Disable regular scrapes.
+					ScrapeInterval: model.Duration(9999 * time.Minute),
+					ScrapeTimeout:  model.Duration(5 * time.Second),
+					// Ensure the proto is chosen. We need proto as it's the only protocol
+					// with the CT parsing support.
+					ScrapeProtocols: []config.ScrapeProtocol{config.PrometheusProto},
+				},
+				ScrapeConfigs: []*config.ScrapeConfig{{JobName: "test"}},
+			}))
+
+			once := sync.Once{}
+			// Start fake HTTP target to that allow one scrape only.
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					fail := true
+					once.Do(func() {
+						fail = false
+						w.Header().Set("Content-Type", `application/vnd.google.protobuf; proto=io.prometheus.client.MetricFamily; encoding=delimited`)
+
+						ctrType := dto.MetricType_HISTOGRAM
+						w.Write(protoMarshalDelimited(t, &dto.MetricFamily{
+							Name:   proto.String(mName),
+							Type:   &ctrType,
+							Metric: []*dto.Metric{{Histogram: tc.histogramSample}},
+						}))
+					})
+
+					if fail {
+						w.WriteHeader(http.StatusInternalServerError)
+					}
+				}),
+			)
+			defer server.Close()
+
+			serverURL, err := url.Parse(server.URL)
+			require.NoError(t, err)
+
+			// Add fake target directly into tsets + reload. Normally users would use
+			// Manager.Run and wait for minimum 5s refresh interval.
+			scrapeManager.updateTsets(map[string][]*targetgroup.Group{
+				"test": {{
+					Targets: []model.LabelSet{{
+						model.SchemeLabel:  model.LabelValue(serverURL.Scheme),
+						model.AddressLabel: model.LabelValue(serverURL.Host),
+					}},
+				}},
+			})
+			scrapeManager.reload()
+
+			// Wait for one scrape.
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+			defer cancel()
+			require.NoError(t, runutil.Retry(100*time.Millisecond, ctx.Done(), func() error {
+				for _, expected := range tc.expectedValues {
+					if countFloatSamplesFromLabels(app, expected.labels) != len(expected.floats) {
+						return fmt.Errorf("expected %v samples for %s", expected.floats, expected.labels)
+					}
+					if countHistogramSamplesFromLabels(app, expected.labels) != len(expected.histograms) {
+						return fmt.Errorf("expected %v histograms for %s", expected.histograms, expected.labels)
+					}
+				}
+				return nil
+			}), "after 1 minute")
+			scrapeManager.Stop()
+
+			for _, expected := range tc.expectedValues {
+				require.Equal(t, expected.floats, getResultFloatsFromLabels(app, expected.labels))
+				require.Equal(t, expected.histograms, getResultHistogramsFromLabels(app, expected.labels))
+			}
+		})
+	}
+}
+
+func countFloatSamplesFromLabels(a *collectResultAppender, lset labels.Labels) (count int) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
+	for _, f := range a.resultFloats {
+		if doLabelsMatchForFloats(f, lset) {
+			count++
+		}
+	}
+	return count
+}
+
+func getResultFloatsFromLabels(app *collectResultAppender, lset labels.Labels) (result []float64) {
+	app.mtx.Lock()
+	defer app.mtx.Unlock()
+
+	for _, f := range app.resultFloats {
+		if doLabelsMatchForFloats(f, lset) {
+			result = append(result, f.f)
+		}
+	}
+
+	return result
+}
+
+func doLabelsMatchForFloats(f floatSample, lset labels.Labels) bool {
+	for _, l := range lset {
+		if f.metric.Get(l.Name) != l.Value {
+			return false
+		}
+	}
+	return true
+}
+
+func doLabelsMatchForHistograms(h histogramSample, lset labels.Labels) bool {
+	for _, l := range lset {
+		if h.lset.Get(l.Name) != l.Value {
+			return false
+		}
+	}
+	return true
+}
+
+func countHistogramSamplesFromLabels(a *collectResultAppender, lset labels.Labels) (count int) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
+	for _, h := range a.resultHistograms {
+		if doLabelsMatchForHistograms(h, lset) {
+			count++
+		}
+	}
+	return count
+}
+
+func getResultHistogramsFromLabels(app *collectResultAppender, lset labels.Labels) (result []histogram.Histogram) {
+	app.mtx.Lock()
+	defer app.mtx.Unlock()
+
+	for _, h := range app.resultHistograms {
+		if doLabelsMatchForHistograms(h, lset) {
+			result = append(result, *h.h)
+		}
+	}
+	return result
 }
 
 func countFloatSamples(a *collectResultAppender, expectedMetricName string) (count int) {
