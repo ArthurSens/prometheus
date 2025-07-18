@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -384,10 +385,11 @@ func TestOTLPWriteHandler(t *testing.T) {
 	timestamp := time.Now()
 	exportRequest := generateOTLPWriteRequest(timestamp)
 	for _, testCase := range []struct {
-		name              string
-		otlpCfg           config.OTLPConfig
-		typeAndUnitLabels bool
-		expectedSamples   []mockSample
+		name                     string
+		otlpCfg                  config.OTLPConfig
+		typeAndUnitLabels        bool
+		otlpNativeDeltaIngestion bool
+		expectedSamples          []mockSample
 	}{
 		{
 			name: "NoTranslation/NoTypeAndUnitLabels",
@@ -580,9 +582,107 @@ func TestOTLPWriteHandler(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "NoTranslation/WithTypeUnitAndTemporalityLabels/DeltaTemporality",
+			otlpCfg: config.OTLPConfig{
+				TranslationStrategy: config.NoTranslation,
+			},
+			typeAndUnitLabels:       true,
+			otlpNativeDeltaIngestion: true,
+			expectedSamples: []mockSample{
+				{
+					l: labels.New(labels.Label{Name: "__name__", Value: "test.counter"},
+						labels.Label{Name: "__type__", Value: "unknown"},
+						labels.Label{Name: "__unit__", Value: "bytes"},
+						labels.Label{Name: "__temporality__", Value: "delta"},
+						labels.Label{Name: "foo.bar", Value: "baz"},
+						labels.Label{Name: "instance", Value: "test-instance"},
+						labels.Label{Name: "job", Value: "test-service"}),
+					t: timestamp.UnixMilli(),
+					v: 10.0,
+				},
+				{
+					l: labels.New(
+						labels.Label{Name: "__name__", Value: "target_info"},
+						labels.Label{Name: "host.name", Value: "test-host"},
+						labels.Label{Name: "instance", Value: "test-instance"},
+						labels.Label{Name: "job", Value: "test-service"},
+					),
+					t: timestamp.UnixMilli(),
+					v: 1,
+				},
+			},
+		},
+		{
+			name: "NoTranslation/WithTypeUnitAndTemporalityLabels/CumulativeTemporality",
+			otlpCfg: config.OTLPConfig{
+				TranslationStrategy: config.NoTranslation,
+			},
+			typeAndUnitLabels:       true,
+			otlpNativeDeltaIngestion: true,
+			expectedSamples: []mockSample{
+				{
+					l: labels.New(labels.Label{Name: "__name__", Value: "test.counter"},
+						labels.Label{Name: "__type__", Value: "counter"},
+						labels.Label{Name: "__unit__", Value: "bytes"},
+						labels.Label{Name: "__temporality__", Value: "cumulative"},
+						labels.Label{Name: "foo.bar", Value: "baz"},
+						labels.Label{Name: "instance", Value: "test-instance"},
+						labels.Label{Name: "job", Value: "test-service"}),
+					t: timestamp.UnixMilli(),
+					v: 10.0,
+				},
+				{
+					l: labels.New(
+						labels.Label{Name: "__name__", Value: "target_info"},
+						labels.Label{Name: "host.name", Value: "test-host"},
+						labels.Label{Name: "instance", Value: "test-instance"},
+						labels.Label{Name: "job", Value: "test-service"},
+					),
+					t: timestamp.UnixMilli(),
+					v: 1,
+				},
+			},
+		},
+		{
+			name: "NoTranslation/WithTypeAndUnitLabels/NoTemporalityLabel",
+			otlpCfg: config.OTLPConfig{
+				TranslationStrategy: config.NoTranslation,
+			},
+			typeAndUnitLabels:       true,
+			otlpNativeDeltaIngestion: false,
+			expectedSamples: []mockSample{
+				{
+					l: labels.New(labels.Label{Name: "__name__", Value: "test.counter"},
+						labels.Label{Name: "__type__", Value: "counter"},
+						labels.Label{Name: "__unit__", Value: "bytes"},
+						labels.Label{Name: "foo.bar", Value: "baz"},
+						labels.Label{Name: "instance", Value: "test-instance"},
+						labels.Label{Name: "job", Value: "test-service"}),
+					t: timestamp.UnixMilli(),
+					v: 10.0,
+				},
+				{
+					l: labels.New(
+						labels.Label{Name: "__name__", Value: "target_info"},
+						labels.Label{Name: "host.name", Value: "test-host"},
+						labels.Label{Name: "instance", Value: "test-instance"},
+						labels.Label{Name: "job", Value: "test-service"},
+					),
+					t: timestamp.UnixMilli(),
+					v: 1,
+				},
+			},
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			appendable := handleOTLP(t, exportRequest, testCase.otlpCfg, testCase.typeAndUnitLabels)
+			var request pmetricotlp.ExportRequest
+			if strings.Contains(testCase.name, "DeltaTemporality") {
+				request = generateOTLPWriteRequestWithTemporality(timestamp, pmetric.AggregationTemporalityDelta)
+			} else {
+				request = exportRequest
+			}
+			appendable := handleOTLP(t, request, testCase.otlpCfg, testCase.typeAndUnitLabels, testCase.otlpNativeDeltaIngestion)
 			for _, sample := range testCase.expectedSamples {
 				requireContainsSample(t, appendable.samples, sample)
 			}
@@ -606,7 +706,7 @@ func requireContainsSample(t *testing.T, actual []mockSample, expected mockSampl
 		"actual  : %v", expected, actual))
 }
 
-func handleOTLP(t *testing.T, exportRequest pmetricotlp.ExportRequest, otlpCfg config.OTLPConfig, typeAndUnitLabels bool) *mockAppendable {
+func handleOTLP(t *testing.T, exportRequest pmetricotlp.ExportRequest, otlpCfg config.OTLPConfig, typeAndUnitLabels bool, otlpNativeDeltaIngestion bool) *mockAppendable {
 	buf, err := exportRequest.MarshalProto()
 	require.NoError(t, err)
 
@@ -619,7 +719,7 @@ func handleOTLP(t *testing.T, exportRequest pmetricotlp.ExportRequest, otlpCfg c
 		return config.Config{
 			OTLPConfig: otlpCfg,
 		}
-	}, OTLPOptions{AddTypeAndUnitLabels: typeAndUnitLabels})
+	}, OTLPOptions{AddTypeAndUnitLabels: typeAndUnitLabels, NativeDelta: otlpNativeDeltaIngestion, AddTemporalityLabels: typeAndUnitLabels && otlpNativeDeltaIngestion})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -629,7 +729,7 @@ func handleOTLP(t *testing.T, exportRequest pmetricotlp.ExportRequest, otlpCfg c
 	return appendable
 }
 
-func generateOTLPWriteRequest(timestamp time.Time) pmetricotlp.ExportRequest {
+func generateOTLPWriteRequestWithTemporality(timestamp time.Time, temporality pmetric.AggregationTemporality) pmetricotlp.ExportRequest {
 	d := pmetric.NewMetrics()
 
 	// Generate One Counter, One Gauge, One Histogram, One Exponential-Histogram
@@ -649,7 +749,7 @@ func generateOTLPWriteRequest(timestamp time.Time) pmetricotlp.ExportRequest {
 	counterMetric.SetDescription("test-counter-description")
 	counterMetric.SetUnit("By")
 	counterMetric.SetEmptySum()
-	counterMetric.Sum().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	counterMetric.Sum().SetAggregationTemporality(temporality)
 	counterMetric.Sum().SetIsMonotonic(true)
 
 	counterDataPoint := counterMetric.Sum().DataPoints().AppendEmpty()
@@ -682,7 +782,7 @@ func generateOTLPWriteRequest(timestamp time.Time) pmetricotlp.ExportRequest {
 	histogramMetric.SetDescription("test-histogram-description")
 	histogramMetric.SetUnit("By")
 	histogramMetric.SetEmptyHistogram()
-	histogramMetric.Histogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	histogramMetric.Histogram().SetAggregationTemporality(temporality)
 
 	histogramDataPoint := histogramMetric.Histogram().DataPoints().AppendEmpty()
 	histogramDataPoint.SetTimestamp(pcommon.NewTimestampFromTime(timestamp))
@@ -698,7 +798,7 @@ func generateOTLPWriteRequest(timestamp time.Time) pmetricotlp.ExportRequest {
 	exponentialHistogramMetric.SetDescription("test-exponential-histogram-description")
 	exponentialHistogramMetric.SetUnit("By")
 	exponentialHistogramMetric.SetEmptyExponentialHistogram()
-	exponentialHistogramMetric.ExponentialHistogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	exponentialHistogramMetric.ExponentialHistogram().SetAggregationTemporality(temporality)
 
 	exponentialHistogramDataPoint := exponentialHistogramMetric.ExponentialHistogram().DataPoints().AppendEmpty()
 	exponentialHistogramDataPoint.SetTimestamp(pcommon.NewTimestampFromTime(timestamp))
@@ -710,6 +810,10 @@ func generateOTLPWriteRequest(timestamp time.Time) pmetricotlp.ExportRequest {
 	exponentialHistogramDataPoint.Attributes().PutStr("foo.bar", "baz")
 
 	return pmetricotlp.NewExportRequestFromMetrics(d)
+}
+
+func generateOTLPWriteRequest(timestamp time.Time) pmetricotlp.ExportRequest {
+	return generateOTLPWriteRequestWithTemporality(timestamp, pmetric.AggregationTemporalityCumulative)
 }
 
 func TestOTLPDelta(t *testing.T) {

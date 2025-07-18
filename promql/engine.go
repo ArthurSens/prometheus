@@ -1155,6 +1155,7 @@ type EvalNodeHelper struct {
 
 	// Additional options for the evaluation.
 	enableDelayedNameRemoval bool
+	enableTypeAndUnitLabels  bool
 }
 
 func (enh *EvalNodeHelper) resetBuilder(lbls labels.Labels) {
@@ -1261,7 +1262,7 @@ func (ev *evaluator) rangeEval(ctx context.Context, prepSeries func(labels.Label
 			biggestLen = len(matrixes[i])
 		}
 	}
-	enh := &EvalNodeHelper{Out: make(Vector, 0, biggestLen), enableDelayedNameRemoval: ev.enableDelayedNameRemoval}
+	enh := &EvalNodeHelper{Out: make(Vector, 0, biggestLen), enableDelayedNameRemoval: ev.enableDelayedNameRemoval, enableTypeAndUnitLabels: ev.enableTypeAndUnitLabels}
 	type seriesAndTimestamp struct {
 		Series
 		ts int64
@@ -1392,7 +1393,7 @@ func (ev *evaluator) rangeEvalAgg(ctx context.Context, aggExpr *parser.Aggregate
 
 	var annos annotations.Annotations
 
-	enh := &EvalNodeHelper{enableDelayedNameRemoval: ev.enableDelayedNameRemoval}
+	enh := &EvalNodeHelper{enableDelayedNameRemoval: ev.enableDelayedNameRemoval, enableTypeAndUnitLabels: ev.enableTypeAndUnitLabels}
 	tempNumSamples := ev.currentSamples
 
 	// Create a mapping from input series to output groups.
@@ -1810,7 +1811,7 @@ func (ev *evaluator) eval(ctx context.Context, expr parser.Expr) (parser.Value, 
 		var prevSS *Series
 		inMatrix := make(Matrix, 1)
 		inArgs[matrixArgIndex] = inMatrix
-		enh := &EvalNodeHelper{Out: make(Vector, 0, 1), enableDelayedNameRemoval: ev.enableDelayedNameRemoval}
+		enh := &EvalNodeHelper{Out: make(Vector, 0, 1), enableDelayedNameRemoval: ev.enableDelayedNameRemoval, enableTypeAndUnitLabels: ev.enableTypeAndUnitLabels}
 		// Process all the calls for one time series at a time.
 		it := storage.NewBuffer(selRange)
 		var chkIter chunkenc.Iterator
@@ -1906,11 +1907,22 @@ func (ev *evaluator) eval(ctx context.Context, expr parser.Expr) (parser.Value, 
 				metricName := inMatrix[0].Metric.Get(labels.MetricName)
 				if metricName != "" && len(ss.Floats) > 0 {
 					if ev.enableTypeAndUnitLabels {
-						// When type-and-unit-labels feature is enabled, check __type__ label
-						typeLabel := inMatrix[0].Metric.Get("__type__")
-						if typeLabel != string(model.MetricTypeCounter) {
-							warnings.Add(annotations.NewPossibleNonCounterLabelInfo(metricName, typeLabel, e.Args[0].PositionRange()))
+						// Check for temporality annotation
+						temporalityLabel := inMatrix[0].Metric.Get("__temporality__")
+						if temporalityLabel == "delta" {
+							if e.Func.Name == "rate" {
+								warnings.Add(annotations.NewRateOnDeltaTemporalityInfo(metricName, e.Args[0].PositionRange()))
+							} else if e.Func.Name == "increase" {
+								warnings.Add(annotations.NewIncreaseOnDeltaTemporalityInfo(metricName, e.Args[0].PositionRange()))
+							}
+						} else if temporalityLabel == "" {
+							// Only check __type__ label when there's no temporality label
+							typeLabel := inMatrix[0].Metric.Get("__type__")
+							if typeLabel != string(model.MetricTypeCounter) {
+								warnings.Add(annotations.NewPossibleNonCounterLabelInfo(metricName, typeLabel, e.Args[0].PositionRange()))
+							}
 						}
+						// For cumulative temporality, don't generate any annotation as it's expected
 					} else if !strings.HasSuffix(metricName, "_total") &&
 						!strings.HasSuffix(metricName, "_sum") &&
 						!strings.HasSuffix(metricName, "_count") &&

@@ -256,7 +256,7 @@ func aggregationTemporality(metric pmetric.Metric) (pmetric.AggregationTemporali
 // However, work is under way to resolve this shortcoming through a feature called native histograms custom buckets:
 // https://github.com/prometheus/prometheus/issues/13485.
 func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPoints pmetric.HistogramDataPointSlice,
-	resource pcommon.Resource, settings Settings, metadata prompb.MetricMetadata, scope scope,
+	resource pcommon.Resource, settings Settings, metadata prompb.MetricMetadata, temporality pmetric.AggregationTemporality, scope scope,
 ) error {
 	for x := 0; x < dataPoints.Len(); x++ {
 		if err := c.everyN.checkContext(ctx); err != nil {
@@ -268,7 +268,7 @@ func (c *PrometheusConverter) addHistogramDataPoints(ctx context.Context, dataPo
 		baseLabels := createAttributes(resource, pt.Attributes(), scope, settings, nil, false)
 
 		if settings.AddTypeAndUnitLabels {
-			baseLabels = addTypeAndUnitLabels(baseLabels, metadata, settings)
+			baseLabels = addMetadataLabels(baseLabels, metadata, settings, temporality, true)
 		}
 
 		// If the sum is unset, it indicates the _sum metric point should be
@@ -553,14 +553,34 @@ func createLabels(name string, baseLabels []prompb.Label, extras ...string) []pr
 
 // addTypeAndUnitLabels appends type and unit labels to the given labels slice.
 func addTypeAndUnitLabels(labels []prompb.Label, metadata prompb.MetricMetadata, settings Settings) []prompb.Label {
+	return addMetadataLabels(labels, metadata, settings, 0, false)
+}
+
+// addMetadataLabels appends type, unit, and optionally temporality labels to the given labels slice.
+func addMetadataLabels(labels []prompb.Label, metadata prompb.MetricMetadata, settings Settings, temporality pmetric.AggregationTemporality, hasTemporality bool) []prompb.Label {
 	unitNamer := otlptranslator.UnitNamer{UTF8Allowed: settings.AllowUTF8}
 
 	labels = slices.DeleteFunc(labels, func(l prompb.Label) bool {
-		return l.Name == "__type__" || l.Name == "__unit__"
+		return l.Name == "__type__" || l.Name == "__unit__" || l.Name == "__temporality__"
 	})
 
 	labels = append(labels, prompb.Label{Name: "__type__", Value: strings.ToLower(metadata.Type.String())})
 	labels = append(labels, prompb.Label{Name: "__unit__", Value: unitNamer.Build(metadata.Unit)})
+
+	// Add temporality label if both flags are enabled and temporality is available
+	if settings.AddTypeAndUnitLabels && settings.AddTemporalityLabels && hasTemporality {
+		var temporalityValue string
+		switch temporality {
+		case pmetric.AggregationTemporalityDelta:
+			temporalityValue = "delta"
+		case pmetric.AggregationTemporalityCumulative:
+			temporalityValue = "cumulative"
+		default:
+			// Don't add temporality label for unknown/unsupported temporality values
+			return labels
+		}
+		labels = append(labels, prompb.Label{Name: "__temporality__", Value: temporalityValue})
+	}
 
 	return labels
 }

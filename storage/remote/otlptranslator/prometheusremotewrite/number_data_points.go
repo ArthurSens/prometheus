@@ -105,7 +105,8 @@ func (c *PrometheusConverter) addSumNumberDataPoints(ctx context.Context, dataPo
 		}
 
 		if settings.AddTypeAndUnitLabels {
-			lbls = addTypeAndUnitLabels(lbls, metadata, settings)
+			temporality, hasTemporality, _ := aggregationTemporality(metric)
+			lbls = addMetadataLabels(lbls, metadata, settings, temporality, hasTemporality)
 		}
 
 		ts := c.addSample(sample, lbls)

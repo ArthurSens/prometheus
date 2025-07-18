@@ -896,9 +896,20 @@ func funcMinOverTime(vals []parser.Value, args parser.Expressions, enh *EvalNode
 // === sum_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===
 func funcSumOverTime(vals []parser.Value, args parser.Expressions, enh *EvalNodeHelper) (Vector, annotations.Annotations) {
 	firstSeries := vals[0].(Matrix)[0]
+	var warnings annotations.Annotations
+	
+	// Check for temporality annotation
+	if enh.enableTypeAndUnitLabels {
+		metricName := firstSeries.Metric.Get(labels.MetricName)
+		temporalityLabel := firstSeries.Metric.Get("__temporality__")
+		if temporalityLabel == "cumulative" && metricName != "" {
+			warnings.Add(annotations.NewSumOverTimeOnCumulativeTemporalityInfo(metricName, args[0].PositionRange()))
+		}
+	}
+	
 	if len(firstSeries.Floats) > 0 && len(firstSeries.Histograms) > 0 {
 		metricName := firstSeries.Metric.Get(labels.MetricName)
-		return enh.Out, annotations.New().Add(annotations.NewMixedFloatsHistogramsWarning(metricName, args[0].PositionRange()))
+		return enh.Out, warnings.Add(annotations.NewMixedFloatsHistogramsWarning(metricName, args[0].PositionRange()))
 	}
 	if len(firstSeries.Floats) == 0 {
 		// The passed values only contain histograms.
@@ -915,14 +926,14 @@ func funcSumOverTime(vals []parser.Value, args parser.Expressions, enh *EvalNode
 		if err != nil {
 			metricName := firstSeries.Metric.Get(labels.MetricName)
 			if errors.Is(err, histogram.ErrHistogramsIncompatibleSchema) {
-				return enh.Out, annotations.New().Add(annotations.NewMixedExponentialCustomHistogramsWarning(metricName, args[0].PositionRange()))
+				return enh.Out, warnings.Add(annotations.NewMixedExponentialCustomHistogramsWarning(metricName, args[0].PositionRange()))
 			} else if errors.Is(err, histogram.ErrHistogramsIncompatibleBounds) {
-				return enh.Out, annotations.New().Add(annotations.NewIncompatibleCustomBucketsHistogramsWarning(metricName, args[0].PositionRange()))
+				return enh.Out, warnings.Add(annotations.NewIncompatibleCustomBucketsHistogramsWarning(metricName, args[0].PositionRange()))
 			}
 		}
-		return vec, nil
+		return vec, warnings
 	}
-	return aggrOverTime(vals, enh, func(s Series) float64 {
+	result := aggrOverTime(vals, enh, func(s Series) float64 {
 		var sum, c float64
 		for _, f := range s.Floats {
 			sum, c = kahanSumInc(f.F, sum, c)
@@ -931,7 +942,8 @@ func funcSumOverTime(vals []parser.Value, args parser.Expressions, enh *EvalNode
 			return sum
 		}
 		return sum + c
-	}), nil
+	})
+	return result, warnings
 }
 
 // === quantile_over_time(Matrix parser.ValueTypeMatrix) (Vector, Annotations) ===

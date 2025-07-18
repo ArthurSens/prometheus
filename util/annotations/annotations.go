@@ -155,6 +155,9 @@ var (
 	NativeHistogramQuantileNaNResultInfo    = fmt.Errorf("%w: input to histogram_quantile has NaN observations, result is NaN for metric name", PromQLInfo)
 	NativeHistogramQuantileNaNSkewInfo      = fmt.Errorf("%w: input to histogram_quantile has NaN observations, result is skewed higher for metric name", PromQLInfo)
 	NativeHistogramFractionNaNsInfo         = fmt.Errorf("%w: input to histogram_fraction has NaN observations, which are excluded from all fractions for metric name", PromQLInfo)
+	RateOnDeltaTemporalityInfo              = fmt.Errorf("%w: rate() should not be used on delta temporality metrics. The rate is already calculated:", PromQLInfo)
+	IncreaseOnDeltaTemporalityInfo          = fmt.Errorf("%w: increase() should not be used on delta temporality metrics. The rate is already calculated:", PromQLInfo)
+	SumOverTimeOnCumulativeTemporalityInfo  = fmt.Errorf("%w: sum_over_time() should not be used on cumulative temporality metrics. Use rate() or increase() for rate calculations:", PromQLInfo)
 )
 
 type annoErr struct {
@@ -280,6 +283,30 @@ func NewPossibleNonCounterLabelInfo(metricName, typeLabel string, pos posrange.P
 	return annoErr{
 		PositionRange: pos,
 		Err:           fmt.Errorf("%w, got %q: %q", PossibleNonCounterLabelInfo, typeLabel, metricName),
+	}
+}
+
+// NewRateOnDeltaTemporalityInfo is used when rate() is applied to a metric with delta temporality.
+func NewRateOnDeltaTemporalityInfo(metricName string, pos posrange.PositionRange) error {
+	return annoErr{
+		PositionRange: pos,
+		Err:           fmt.Errorf("%w %q", RateOnDeltaTemporalityInfo, metricName),
+	}
+}
+
+// NewIncreaseOnDeltaTemporalityInfo is used when increase() is applied to a metric with delta temporality.
+func NewIncreaseOnDeltaTemporalityInfo(metricName string, pos posrange.PositionRange) error {
+	return annoErr{
+		PositionRange: pos,
+		Err:           fmt.Errorf("%w %q", IncreaseOnDeltaTemporalityInfo, metricName),
+	}
+}
+
+// NewSumOverTimeOnCumulativeTemporalityInfo is used when sum_over_time() is applied to a metric with cumulative temporality.
+func NewSumOverTimeOnCumulativeTemporalityInfo(metricName string, pos posrange.PositionRange) error {
+	return annoErr{
+		PositionRange: pos,
+		Err:           fmt.Errorf("%w %q", SumOverTimeOnCumulativeTemporalityInfo, metricName),
 	}
 }
 

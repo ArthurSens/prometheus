@@ -535,6 +535,8 @@ type OTLPOptions struct {
 	LookbackDelta time.Duration
 	// Add type and unit labels to the metrics.
 	AddTypeAndUnitLabels bool
+	// Add temporality labels to the metrics.
+	AddTemporalityLabels bool
 }
 
 // NewOTLPWriteHandler creates a http.Handler that accepts OTLP write requests and
@@ -551,9 +553,10 @@ func NewOTLPWriteHandler(logger *slog.Logger, _ prometheus.Registerer, appendabl
 			appendable: appendable,
 		},
 		config:                   configFunc,
-		allowDeltaTemporality:    opts.NativeDelta,
-		lookbackDelta:            opts.LookbackDelta,
-		typeAndUnitLabelsEnabled: opts.AddTypeAndUnitLabels,
+		allowDeltaTemporality:       opts.NativeDelta,
+		nativeDeltaIngestionEnabled: opts.NativeDelta,
+		lookbackDelta:               opts.LookbackDelta,
+		typeAndUnitLabelsEnabled:    opts.AddTypeAndUnitLabels,
 	}
 
 	wh := &otlpWriteHandler{logger: logger, defaultConsumer: ex}
@@ -588,10 +591,11 @@ func NewOTLPWriteHandler(logger *slog.Logger, _ prometheus.Registerer, appendabl
 
 type rwExporter struct {
 	*writeHandler
-	config                   func() config.Config
-	allowDeltaTemporality    bool
-	lookbackDelta            time.Duration
-	typeAndUnitLabelsEnabled bool
+	config                      func() config.Config
+	allowDeltaTemporality       bool
+	nativeDeltaIngestionEnabled bool
+	lookbackDelta               time.Duration
+	typeAndUnitLabelsEnabled    bool
 }
 
 func (rw *rwExporter) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
@@ -609,6 +613,7 @@ func (rw *rwExporter) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) er
 		AllowDeltaTemporality:             rw.allowDeltaTemporality,
 		LookbackDelta:                     rw.lookbackDelta,
 		AddTypeAndUnitLabels:              rw.typeAndUnitLabelsEnabled,
+		AddTemporalityLabels:              rw.typeAndUnitLabelsEnabled && rw.nativeDeltaIngestionEnabled,
 	})
 	if err != nil {
 		rw.logger.Warn("Error translating OTLP metrics to Prometheus write request", "err", err)

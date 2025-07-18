@@ -55,6 +55,7 @@ type Settings struct {
 	// PromoteScopeMetadata controls whether to promote OTel scope metadata to metric labels.
 	PromoteScopeMetadata bool
 	AddTypeAndUnitLabels bool
+	AddTemporalityLabels bool
 }
 
 // PrometheusConverter converts from OTel write format to Prometheus remote write format.
@@ -224,7 +225,7 @@ func (c *PrometheusConverter) FromMetrics(ctx context.Context, md pmetric.Metric
 							}
 						}
 					} else {
-						if err := c.addHistogramDataPoints(ctx, dataPoints, resource, settings, metadata, scope); err != nil {
+						if err := c.addHistogramDataPoints(ctx, dataPoints, resource, settings, metadata, temporality, scope); err != nil {
 							errs = multierr.Append(errs, err)
 							if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 								return
